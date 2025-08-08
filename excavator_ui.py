@@ -2,14 +2,15 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from PyQt5.QtCore import Qt, QPointF, pyqtSignal
-from PyQt5.QtGui import QPen, QBrush, QColor, QPainter
+from PyQt5.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal
+from PyQt5.QtGui import QPen, QBrush, QColor, QPainter, QPainterPath, QTransform
 from PyQt5.QtWidgets import (
     QApplication,
     QButtonGroup,
     QDoubleSpinBox,
     QFrame,
     QGraphicsLineItem,
+    QGraphicsEllipseItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -233,19 +234,61 @@ class LabeledSlider(QWidget):
 
 
 class ExcavatorView(QGraphicsView):
-    def __init__(self) -> None:
+    def __init__(self, params: ExcavatorParameters) -> None:
         super().__init__()
+        self.params = params
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.setRenderHints(self.renderHints() | QPainter.Antialiasing)
-        self.scale(60.0, -60.0)  # meters to pixels, invert Y
+        # 스크롤바 비활성화
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 뷰 변환은 씬 크기에 맞춰 동적으로 적용
+        # 총 길이 (작업 반경 추정)
+        self.total_length = (
+            self.params.boom_length_m
+            + self.params.arm_length_m
+            + self.params.bucket_length_m
+        )
+        # 뷰 내에서 굴착기를 위로 올리는 Y 오프셋 (m)
+        self.view_offset_y_m = 1.0
         self._init_items()
+        self._apply_fit_transform()
 
     def _init_items(self) -> None:
         self.scene.clear()
-        # Ground line
-        ground = self.scene.addLine(-10, 0, 20, 0, QPen(QColor("#888"), 0.02))
+        # 작업 반경에 맞춘 씬 경계 (하단 여유를 더 확보)
+        left_margin = -2.0
+        bottom_margin = -2.0
+        width = self.total_length + 4.0
+        height = self.total_length + 3.0
+        self.scene.setSceneRect(QRectF(left_margin, bottom_margin, width, height))
+
+        # 지면선 (씬 전체 가로폭)
+        ground_y = self.view_offset_y_m
+        ground = self.scene.addLine(
+            left_margin, ground_y, left_margin + width, ground_y, QPen(QColor("#888"), 0.02)
+        )
         ground.setZValue(-1)
+
+        # 스윙축(턴테이블) 원형 아이템 (원점)
+        self.swing_radius_m = 0.45  # 약 0.9 m 직경
+        swing_pen = QPen(QColor("#6a4c93"), 0.04, Qt.SolidLine, Qt.RoundCap)
+        swing_brush = QBrush(QColor(106, 76, 147, 40))
+        self.swing_axis: QGraphicsEllipseItem = self.scene.addEllipse(
+            -self.swing_radius_m,
+            self.view_offset_y_m - self.swing_radius_m,
+            2 * self.swing_radius_m,
+            2 * self.swing_radius_m,
+            swing_pen,
+            swing_brush,
+        )
+        self.swing_axis.setZValue(0)
+        # 스윙축-붐축 연결용 짧은 축(라인)
+        self.swing_shaft_len_m = 0.30
+        self.swing_shaft = QGraphicsLineItem()
+        self.swing_shaft.setPen(QPen(QColor("#6a4c93"), 0.06, Qt.SolidLine, Qt.RoundCap))
+        self.scene.addItem(self.swing_shaft)
         # Links
         self.link1 = QGraphicsLineItem()
         self.link2 = QGraphicsLineItem()
@@ -257,16 +300,95 @@ class ExcavatorView(QGraphicsView):
         ]:
             link.setPen(QPen(color, 0.08, Qt.SolidLine, Qt.RoundCap))
             self.scene.addItem(link)
-        # Joints as small circles (drawn using thick points via short lines)
-        self.joint_pen = QPen(QColor("#e76f51"), 0.12, Qt.SolidLine, Qt.RoundCap)
+        # 관절 마커: 원형 아이템
+        self.joint_pen = QPen(QColor("#e76f51"), 0.05, Qt.SolidLine, Qt.RoundCap)
+        self.joint_brush = QBrush(QColor("#e76f51"))
+        self.joint_radius_m = 0.10
+        self.joint0 = QGraphicsEllipseItem()
+        self.joint1 = QGraphicsEllipseItem()
+        self.joint2 = QGraphicsEllipseItem()
+        self.joint3 = QGraphicsEllipseItem()
+        for j in (self.joint0, self.joint1, self.joint2, self.joint3):
+            j.setPen(self.joint_pen)
+            j.setBrush(self.joint_brush)
+            self.scene.addItem(j)
+
+        # 버킷 궤적 (QPainterPath 누적)
+        self.trajectory_path = QPainterPath()
+        traj_pen = QPen(QColor("#ff9500"), 0.03, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        self.trajectory_item = self.scene.addPath(self.trajectory_path, traj_pen)
+        self.trajectory_item.setZValue(-0.2)
+        self._last_tip_point: Optional[QPointF] = None
 
     def update_links(self, p0: QPointF, p1: QPointF, p2: QPointF, p3: QPointF) -> None:
-        self.link1.setLine(p0.x(), p0.y(), p1.x(), p1.y())
-        self.link2.setLine(p1.x(), p1.y(), p2.x(), p2.y())
-        self.link3.setLine(p2.x(), p2.y(), p3.x(), p3.y())
-        # Optional: add joint markers by short zero-length lines
-        for pt in (p0, p1, p2, p3):
-            self.scene.addLine(pt.x(), pt.y(), pt.x(), pt.y(), self.joint_pen)
+        oy = self.view_offset_y_m
+        self.link1.setLine(p0.x(), p0.y() + oy, p1.x(), p1.y() + oy)
+        self.link2.setLine(p1.x(), p1.y() + oy, p2.x(), p2.y() + oy)
+        self.link3.setLine(p2.x(), p2.y() + oy, p3.x(), p3.y() + oy)
+        # 관절 원 업데이트
+        r = self.joint_radius_m
+        self.joint0.setRect(p0.x() - r, p0.y() + oy - r, 2 * r, 2 * r)
+        self.joint1.setRect(p1.x() - r, p1.y() + oy - r, 2 * r, 2 * r)
+        self.joint2.setRect(p2.x() - r, p2.y() + oy - r, 2 * r, 2 * r)
+        self.joint3.setRect(p3.x() - r, p3.y() + oy - r, 2 * r, 2 * r)
+        # 스윙축-붐축 연결용 짧은 축 업데이트 (p0->p1 방향으로 매우 짧게)
+        dx = p1.x() - p0.x()
+        dy = p1.y() - p0.y()
+        length = (dx * dx + dy * dy) ** 0.5
+        if length > 1e-6:
+            ux = dx / length
+            uy = dy / length
+        else:
+            ux, uy = 1.0, 0.0
+        pbx = p0.x() + ux * self.swing_shaft_len_m
+        pby = p0.y() + uy * self.swing_shaft_len_m
+        self.swing_shaft.setLine(p0.x(), p0.y() + oy, pbx, pby + oy)
+
+        # 버킷 궤적 업데이트
+        tip_x = p3.x()
+        tip_y = p3.y() + oy
+        tip_point = QPointF(tip_x, tip_y)
+        if self._last_tip_point is None:
+            self.trajectory_path = QPainterPath(tip_point)
+            self.trajectory_item.setPath(self.trajectory_path)
+            self._last_tip_point = QPointF(tip_point)
+        else:
+            dxp = tip_point.x() - self._last_tip_point.x()
+            dyp = tip_point.y() - self._last_tip_point.y()
+            if (dxp * dxp + dyp * dyp) >= (0.005 * 0.005):  # 최소 5mm 이동 시만 추가 (연속성 강화)
+                self.trajectory_path.lineTo(tip_point)
+                self.trajectory_item.setPath(self.trajectory_path)
+                self._last_tip_point = QPointF(tip_point)
+
+    def reset_trajectory(self) -> None:
+        self.trajectory_path = QPainterPath()
+        self.trajectory_item.setPath(self.trajectory_path)
+        self._last_tip_point = None
+
+    def _apply_fit_transform(self) -> None:
+        rect = self.scene.sceneRect()
+        vw = max(1, self.viewport().width())
+        vh = max(1, self.viewport().height())
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        scale_x = vw / rect.width()
+        scale_y = vh / rect.height()
+        s = min(scale_x, scale_y) * 0.98  # 약간의 여백
+        dx = (vw - s * rect.width()) / 2.0
+        dy = (vh - s * rect.height()) / 2.0
+        transform = QTransform(
+            s,
+            0.0,
+            0.0,
+            -s,
+            dx - s * rect.left(),
+            dy + s * rect.bottom(),
+        )
+        self.setTransform(transform)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_fit_transform()
 
 
 class MainWindow(QMainWindow):
@@ -290,7 +412,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
 
         # Top: Excavator view
-        self.view = ExcavatorView()
+        self.view = ExcavatorView(self.params)
         self.view.setMinimumHeight(420)
         layout.addWidget(self.view, 3)
 
@@ -299,12 +421,20 @@ class MainWindow(QMainWindow):
         self.ik_btn = QRadioButton("역기구학 (IK)")
         self.fk_btn = QRadioButton("기구학 (FK)")
         self.fk_btn.setChecked(True)
+        # 궤적 리셋 버튼
+        self.reset_btn = QPushButton("궤적 리셋")
+        self.reset_btn.clicked.connect(self._on_reset_trajectory)
+        # 샘플 궤적 자동 재생 버튼
+        self.demo_btn = QPushButton("샘플 궤적")
+        self.demo_btn.clicked.connect(self._on_toggle_demo)
         group = QButtonGroup(self)
         group.addButton(self.ik_btn, 0)
         group.addButton(self.fk_btn, 1)
         self.ik_btn.toggled.connect(self._on_mode_changed)
         mode_row.addWidget(self.ik_btn)
         mode_row.addWidget(self.fk_btn)
+        mode_row.addWidget(self.reset_btn)
+        mode_row.addWidget(self.demo_btn)
         mode_row.addStretch(1)
         layout.addLayout(mode_row)
 
@@ -372,6 +502,54 @@ class MainWindow(QMainWindow):
             k = math.radians(self.fk_bucket.value())
             self.joints = self.model._clamp_to_limits(JointAngles(b, a, k))
         self._update_view()
+
+    def _on_reset_trajectory(self) -> None:
+        # 뷰의 궤적 초기화
+        self.view.reset_trajectory()
+
+    # ---------------- Demo (Sample Trajectory) ----------------
+    def _on_toggle_demo(self) -> None:
+        if getattr(self, "_demo_running", False):
+            self._stop_demo()
+        else:
+            self._start_demo()
+
+    def _start_demo(self) -> None:
+        self._demo_running = True
+        self.demo_btn.setText("샘플 정지")
+        # 기존 궤적을 유지하여 연속적인 샘플 궤적을 그리게 함
+        self._demo_t = 0
+        if not hasattr(self, "_demo_timer"):
+            self._demo_timer = QTimer(self)
+            self._demo_timer.timeout.connect(self._demo_tick)
+        self._demo_timer.start(16)  # ~60 FPS
+
+    def _stop_demo(self) -> None:
+        if getattr(self, "_demo_running", False):
+            self._demo_running = False
+            if hasattr(self, "_demo_timer"):
+                self._demo_timer.stop()
+        self.demo_btn.setText("샘플 궤적")
+
+    def _demo_tick(self) -> None:
+        # 시간 진행 및 경로 점 샘플링
+        self._demo_t += 1
+        t = self._demo_t / 90.0
+        # 안전한 작업 반경 내 임의 궤적 (리사주/타원 혼합)
+        r = (self.params.boom_length_m + self.params.arm_length_m) * 0.7
+        cx = r * 0.55
+        cy = r * 0.45 + 0.5
+        x = cx + 0.45 * r * math.sin(1.1 * t) * math.cos(0.7 * t)
+        y = max(0.15, cy + 0.35 * r * abs(math.sin(t)))
+        theta = math.radians(12.0) * math.sin(0.6 * t)
+
+        ik = self.model.inverse(x, y, theta, self.joints)
+        if ik is not None:
+            self.joints = ik
+            self._update_view()
+        # 종료 조건: 일정 시간 진행 후 자동 종료
+        if self._demo_t > 1800:
+            self._stop_demo()
 
     def end_pose(self) -> Tuple[float, float, float]:
         p0, p1, p2, p3 = self.model.forward(self.joints)

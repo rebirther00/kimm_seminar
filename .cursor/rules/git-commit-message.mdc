@@ -1,0 +1,26 @@
+---
+alwaysApply: true
+description: git commit 시 커밋 메시지 확인/요청 규칙
+---
+
+# Git Commit Message Prompt Rule
+
+- **목적**: 모든 `git commit` 전에 항상 사용자에게 커밋 메시지를 남길지 물어본다.
+
+- **동작 규칙**:
+  - 커밋 실행 직전 반드시 질문한다: "지금 커밋 메시지를 입력하시겠어요? (예/아니오)"
+  - 사용자가 메시지를 제공하면, 커밋은 에디터를 열지 말고 반드시 `-m` 옵션으로 실행한다.
+    - 예: `git commit -m "feat(ui): add sample trajectory playback"`
+  - 사용자가 메시지를 제공하지 않으면, 변경 요약을 기반으로 제안 메시지를 만들어 확인을 구한 뒤, 동의 시 그 메시지로 `-m` 커밋한다. 동의하지 않거나 응답이 없으면 커밋을 취소한다.
+  - 멀티라인 메시지가 필요한 경우 첫 줄에 요약, 둘째 줄은 빈 줄, 이후 본문 형식을 권장한다.
+  - Windows cmd 환경을 고려해 메시지 내 따옴표를 적절히 이스케이프한다.
+  - 다른 비대화형 기본 규칙보다 이 규칙을 우선 적용한다. 메시지 확인 없이 커밋하지 않는다.
+
+- **금지 사항**:
+  - 빈 메시지로 커밋하지 않는다.
+  - 에디터를 여는 `git commit`(예: `-m` 없이 실행)을 사용하지 않는다.
+
+- **참고**:
+  - Conventional Commits 스타일을 우선 제안한다: `type(scope): summary`
+  - 예: `fix(kinematics): clamp joint angles to limits in IK`
+

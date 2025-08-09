@@ -76,9 +76,9 @@ class ExcavatorKinematics:
         )
         return p0, p1, p2, p3
 
-    # Inverse kinematics: given end effector pose (x,y,theta), compute joint angles
+    # Inverse kinematics: given end effector pose (x,z,theta), compute joint angles
     def inverse(
-        self, x: float, y: float, theta_rad: float, current: JointAngles
+        self, x: float, z: float, theta_rad: float, current: JointAngles
     ) -> Optional[JointAngles]:
         l1 = self.params.boom_length_m
         l2 = self.params.arm_length_m
@@ -86,9 +86,9 @@ class ExcavatorKinematics:
 
         # Wrist position (end of arm/stick)
         wx = x - l3 * math.cos(theta_rad)
-        wy = y - l3 * math.sin(theta_rad)
+        wz = z - l3 * math.sin(theta_rad)
 
-        r2 = wx * wx + wy * wy
+        r2 = wx * wx + wz * wz
         # Check reachability (numerical safety)
         min_reach = max(0.0, abs(l1 - l2))
         max_reach = l1 + l2
@@ -109,7 +109,7 @@ class ExcavatorKinematics:
         def solve_q1(q2: float) -> float:
             k1 = l1 + l2 * math.cos(q2)
             k2 = l2 * math.sin(q2)
-            return math.atan2(wy, wx) - math.atan2(k2, k1)
+            return math.atan2(wz, wx) - math.atan2(k2, k1)
 
         candidates = []
         for q2 in (q2a, q2b):
@@ -465,9 +465,9 @@ class MainWindow(QMainWindow):
         # Reasonable bounds for a 30t excavator working envelope (meters)
         max_reach = self.params.boom_length_m + self.params.arm_length_m + self.params.bucket_length_m
         self.ik_x = LabeledSlider("x (m)", -1.0, max_reach, 0.01, "m", self.end_pose()[0])
-        self.ik_y = LabeledSlider("y (m)", 0.0, max_reach, 0.01, "m", self.end_pose()[1])
+        self.ik_z = LabeledSlider("z (m)", 0.0, max_reach, 0.01, "m", self.end_pose()[1])
         self.ik_theta = LabeledSlider("theta (deg)", -180.0, 180.0, 0.5, "deg", math.degrees(self.end_pose()[2]))
-        for w in (self.ik_x, self.ik_y, self.ik_theta):
+        for w in (self.ik_x, self.ik_z, self.ik_theta):
             w.valueChanged.connect(self.on_any_value_changed)
             self.controls_layout.addWidget(w)
 
@@ -489,9 +489,9 @@ class MainWindow(QMainWindow):
         if self.ik_btn.isChecked():
             # IK mode: compute joints from pose
             x = self.ik_x.value()
-            y = self.ik_y.value()
+            z = self.ik_z.value()
             theta = math.radians(self.ik_theta.value())
-            ik = self.model.inverse(x, y, theta, self.joints)
+            ik = self.model.inverse(x, z, theta, self.joints)
             if ik is not None:
                 self.joints = ik
             # If no solution, keep previous joints
@@ -538,12 +538,12 @@ class MainWindow(QMainWindow):
         # 안전한 작업 반경 내 임의 궤적 (리사주/타원 혼합)
         r = (self.params.boom_length_m + self.params.arm_length_m) * 0.7
         cx = r * 0.55
-        cy = r * 0.45 + 0.5
+        cz = r * 0.45 + 0.5
         x = cx + 0.45 * r * math.sin(1.1 * t) * math.cos(0.7 * t)
-        y = max(0.15, cy + 0.35 * r * abs(math.sin(t)))
+        z = max(0.15, cz + 0.35 * r * abs(math.sin(t)))
         theta = math.radians(12.0) * math.sin(0.6 * t)
 
-        ik = self.model.inverse(x, y, theta, self.joints)
+        ik = self.model.inverse(x, z, theta, self.joints)
         if ik is not None:
             self.joints = ik
             self._update_view()
@@ -565,9 +565,9 @@ class MainWindow(QMainWindow):
             self.fk_arm.set_value(math.degrees(self.joints.arm_rad))
             self.fk_bucket.set_value(math.degrees(self.joints.bucket_rad))
         else:
-            x, y, th = self.end_pose()
+            x, z, th = self.end_pose()
             self.ik_x.set_value(x)
-            self.ik_y.set_value(y)
+            self.ik_z.set_value(z)
             self.ik_theta.set_value(math.degrees(th))
 
 

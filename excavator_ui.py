@@ -2,9 +2,9 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from PyQt5.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal
-from PyQt5.QtGui import QPen, QBrush, QColor, QPainter, QPainterPath, QTransform
-from PyQt5.QtWidgets import (
+from PySide6.QtCore import Qt, QPointF, QRectF, QTimer, Signal
+from PySide6.QtGui import QPen, QBrush, QColor, QPainter, QPainterPath, QTransform, QFont
+from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QDoubleSpinBox,
@@ -169,7 +169,7 @@ class ExcavatorKinematics:
 # UI Components
 # -----------------------------
 class LabeledSlider(QWidget):
-    valueChanged = pyqtSignal(float)
+    valueChanged = Signal(float)
 
     def __init__(
         self,
@@ -263,6 +263,9 @@ class ExcavatorView(QGraphicsView):
         width = self.total_length + 4.0
         height = self.total_length + 3.0
         self.scene.setSceneRect(QRectF(left_margin, bottom_margin, width, height))
+
+        # 0.5m 간격 그리드 및 좌표축 추가
+        self._add_grid_and_axes(left_margin, bottom_margin, width, height)
 
         # 지면선 (씬 전체 가로폭)
         ground_y = self.view_offset_y_m
@@ -390,6 +393,85 @@ class ExcavatorView(QGraphicsView):
         super().resizeEvent(event)
         self._apply_fit_transform()
 
+    def _add_grid_and_axes(self, left_margin: float, bottom_margin: float, width: float, height: float) -> None:
+        """0.5m 간격의 그리드와 좌표축을 추가합니다."""
+        
+        # 그리드 펜 설정
+        major_grid_pen = QPen(QColor("#ccc"), 0.015, Qt.SolidLine)  # 1m 간격 (진한 선)
+        minor_grid_pen = QPen(QColor("#eee"), 0.01, Qt.SolidLine)   # 0.5m 간격 (연한 선)
+        
+        # X축 방향 그리드 (수직선들)
+        x = math.ceil(left_margin * 2) * 0.5  # 0.5m 간격으로 시작
+        while x <= left_margin + width:
+            pen = major_grid_pen if abs(x % 1.0) < 0.1 else minor_grid_pen
+            line = self.scene.addLine(x, bottom_margin, x, bottom_margin + height, pen)
+            line.setZValue(-2)
+            x += 0.5
+        
+        # Y축 방향 그리드 (수평선들)
+        y = math.ceil(bottom_margin * 2) * 0.5  # 0.5m 간격으로 시작
+        while y <= bottom_margin + height:
+            pen = major_grid_pen if abs(y % 1.0) < 0.1 else minor_grid_pen
+            line = self.scene.addLine(left_margin, y, left_margin + width, y, pen)
+            line.setZValue(-2)
+            y += 0.5
+        
+        # 좌표축 설정
+        axis_pen = QPen(QColor("#333"), 0.04, Qt.SolidLine)
+        arrow_size = 0.2
+        
+        # X축 (가로축) - 오른쪽 방향
+        x_length = 3.0
+        x_start_y = self.view_offset_y_m
+        x_axis = self.scene.addLine(0, x_start_y, x_length, x_start_y, axis_pen)
+        x_axis.setZValue(1)
+        
+        # X축 화살표
+        x_arrow1 = self.scene.addLine(
+            x_length, x_start_y,
+            x_length - arrow_size, x_start_y + arrow_size/2,
+            axis_pen
+        )
+        x_arrow2 = self.scene.addLine(
+            x_length, x_start_y,
+            x_length - arrow_size, x_start_y - arrow_size/2,
+            axis_pen
+        )
+        x_arrow1.setZValue(1)
+        x_arrow2.setZValue(1)
+        
+        # Y축 (세로축) - 위쪽 방향
+        y_length = 3.0
+        y_axis = self.scene.addLine(0, x_start_y, 0, x_start_y + y_length, axis_pen)
+        y_axis.setZValue(1)
+        
+        # Y축 화살표
+        y_arrow1 = self.scene.addLine(
+            0, x_start_y + y_length,
+            -arrow_size/2, x_start_y + y_length - arrow_size,
+            axis_pen
+        )
+        y_arrow2 = self.scene.addLine(
+            0, x_start_y + y_length,
+            arrow_size/2, x_start_y + y_length - arrow_size,
+            axis_pen
+        )
+        y_arrow1.setZValue(1)
+        y_arrow2.setZValue(1)
+        
+        # 축 라벨 제거됨
+        
+        # 눈금 표시 (X축) - 숫자 제거
+        for i in range(1, int(x_length) + 1):
+            tick = self.scene.addLine(i, x_start_y - 0.05, i, x_start_y + 0.05, axis_pen)
+            tick.setZValue(1)
+        
+        # 눈금 표시 (Y축) - 숫자 제거
+        for i in range(1, int(y_length) + 1):
+            y_pos = x_start_y + i
+            tick = self.scene.addLine(-0.05, y_pos, 0.05, y_pos, axis_pen)
+            tick.setZValue(1)
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -424,8 +506,8 @@ class MainWindow(QMainWindow):
         # 궤적 리셋 버튼
         self.reset_btn = QPushButton("궤적 리셋")
         self.reset_btn.clicked.connect(self._on_reset_trajectory)
-        # 샘플 궤적 자동 재생 버튼
-        self.demo_btn = QPushButton("샘플 궤적")
+        # 평탄화 작업 자동 재생 버튼
+        self.demo_btn = QPushButton("평탄화 작업")
         self.demo_btn.clicked.connect(self._on_toggle_demo)
         group = QButtonGroup(self)
         group.addButton(self.ik_btn, 0)
@@ -516,9 +598,11 @@ class MainWindow(QMainWindow):
 
     def _start_demo(self) -> None:
         self._demo_running = True
-        self.demo_btn.setText("샘플 정지")
-        # 기존 궤적을 유지하여 연속적인 샘플 궤적을 그리게 함
+        self.demo_btn.setText("평탄화 정지")
+        # 현재 굴착기 위치를 시작점으로 저장
+        self._start_pose = self.end_pose()  # (x, z, theta)
         self._demo_t = 0
+        self._demo_phase = 0  # 0: 이동, 1: 평탄화, 2: 복귀
         if not hasattr(self, "_demo_timer"):
             self._demo_timer = QTimer(self)
             self._demo_timer.timeout.connect(self._demo_tick)
@@ -529,26 +613,70 @@ class MainWindow(QMainWindow):
             self._demo_running = False
             if hasattr(self, "_demo_timer"):
                 self._demo_timer.stop()
-        self.demo_btn.setText("샘플 궤적")
+        self.demo_btn.setText("평탄화 작업")
 
     def _demo_tick(self) -> None:
-        # 시간 진행 및 경로 점 샘플링
+        # 3단계 평탄화 작업: 1) 이동 2) 평탄화 당기기 3) 복귀
         self._demo_t += 1
-        t = self._demo_t / 90.0
-        # 안전한 작업 반경 내 임의 궤적 (리사주/타원 혼합)
-        r = (self.params.boom_length_m + self.params.arm_length_m) * 0.7
-        cx = r * 0.55
-        cz = r * 0.45 + 0.5
-        x = cx + 0.45 * r * math.sin(1.1 * t) * math.cos(0.7 * t)
-        z = max(0.15, cz + 0.35 * r * abs(math.sin(t)))
-        theta = math.radians(12.0) * math.sin(0.6 * t)
+        
+        # 시작 위치와 작업 설정
+        start_x, start_z, start_theta = self._start_pose
+        work_distance = 2.5  # 평탄화 작업 거리 (미터)
+        target_x = start_x + work_distance  # 이동할 먼 지점
+        work_height = 0.25  # 평탄화 작업 높이
+        
+        # 각 단계별 지속 시간 (프레임 수)
+        phase_duration = 120  # 각 단계당 2초 (60fps 기준)
+        
+        if self._demo_phase == 0:  # 1단계: 먼 지점으로 이동
+            progress = min(1.0, self._demo_t / phase_duration)
+            # 부드러운 이동을 위한 ease-in-out 함수
+            smooth_progress = 0.5 * (1 - math.cos(progress * math.pi))
+            
+            x = start_x + (target_x - start_x) * smooth_progress
+            z = start_z + (work_height - start_z) * smooth_progress
+            theta = start_theta + (math.radians(-90.0) - start_theta) * smooth_progress
+            
+            if progress >= 1.0:
+                self._demo_phase = 1
+                self._demo_t = 0
+                
+        elif self._demo_phase == 1:  # 2단계: 평탄화 작업 (당기기)
+            progress = min(1.0, self._demo_t / (phase_duration * 1.5))  # 평탄화는 조금 더 천천히
+            # 선형 당기기 동작
+            
+            x = target_x - work_distance * progress  # x축 음의 방향으로 당기기
+            z = work_height  # 일정한 높이 유지
+            theta = math.radians(-90.0)  # 버킷 각도 유지
+            
+            if progress >= 1.0:
+                self._demo_phase = 2
+                self._demo_t = 0
+                
+        elif self._demo_phase == 2:  # 3단계: 원래 위치로 복귀
+            progress = min(1.0, self._demo_t / phase_duration)
+            smooth_progress = 0.5 * (1 - math.cos(progress * math.pi))
+            
+            # 현재 위치에서 원래 위치로 복귀
+            current_x = start_x
+            current_z = work_height
+            current_theta = math.radians(-90.0)
+            
+            x = current_x + (start_x - current_x) * smooth_progress
+            z = current_z + (start_z - current_z) * smooth_progress
+            theta = current_theta + (start_theta - current_theta) * smooth_progress
+            
+            if progress >= 1.0:
+                self._stop_demo()
+                return
 
         ik = self.model.inverse(x, z, theta, self.joints)
         if ik is not None:
             self.joints = ik
             self._update_view()
-        # 종료 조건: 일정 시간 진행 후 자동 종료
-        if self._demo_t > 1800:
+        
+        # 안전 장치: 너무 오래 실행되면 자동 종료
+        if self._demo_t > phase_duration * 3:
             self._stop_demo()
 
     def end_pose(self) -> Tuple[float, float, float]:
@@ -576,7 +704,7 @@ def main() -> None:
     win = MainWindow()
     win.resize(1000, 800)
     win.show()
-    app.exec_()
+    app.exec()  # exec_() → exec()로 변경
 
 
 if __name__ == "__main__":

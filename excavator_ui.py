@@ -35,12 +35,12 @@ class ExcavatorParameters:
     bucket_length_m: float = 1.50  # Bucket effective tip length
 
     # Joint limits in degrees (boom, arm, bucket)
-    boom_min_deg: float = 0.0
-    boom_max_deg: float = 75.0
-    arm_min_deg: float = -130.0
-    arm_max_deg: float = 130.0
-    bucket_min_deg: float = -120.0
-    bucket_max_deg: float = 120.0
+    boom_min_deg: float = -90.0
+    boom_max_deg: float = 90.0
+    arm_min_deg: float = -156.0
+    arm_max_deg: float = -34.0
+    bucket_min_deg: float = -133.0
+    bucket_max_deg: float = 43.0
 
 
 @dataclass
@@ -243,6 +243,10 @@ class ExcavatorView(QGraphicsView):
         # 스크롤바 비활성화
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 마우스 드래그로 화면 이동 가능하게 설정
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        # 마우스 휠 줌 활성화
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         # 뷰 변환은 씬 크기에 맞춰 동적으로 적용
         # 총 길이 (작업 반경 추정)
         self.total_length = (
@@ -393,6 +397,23 @@ class ExcavatorView(QGraphicsView):
         super().resizeEvent(event)
         self._apply_fit_transform()
 
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        # 마우스 휠로 줌 인/아웃
+        zoom_in_factor = 1.25
+        zoom_out_factor = 1 / zoom_in_factor
+
+        # 현재 줌 레벨 확인 (너무 크거나 작아지지 않도록 제한)
+        current_scale = self.transform().m11()
+        
+        if event.angleDelta().y() > 0:
+            # 줌 인
+            if current_scale < 10.0:  # 최대 10배까지만 확대
+                self.scale(zoom_in_factor, zoom_in_factor)
+        else:
+            # 줌 아웃
+            if current_scale > 0.1:  # 최소 0.1배까지만 축소
+                self.scale(zoom_out_factor, zoom_out_factor)
+
     def _add_grid_and_axes(self, left_margin: float, bottom_margin: float, width: float, height: float) -> None:
         """0.5m 간격의 그리드와 좌표축을 추가합니다."""
         
@@ -459,7 +480,29 @@ class ExcavatorView(QGraphicsView):
         y_arrow1.setZValue(1)
         y_arrow2.setZValue(1)
         
-        # 축 라벨 제거됨
+        # 축 라벨 추가
+        font = QFont()
+        font.setPointSize(12)  # 더 큰 폰트 크기로 변경
+        
+        # X축 라벨 (붐 원점 오른쪽) - 상하 뒤집기
+        x_label = self.scene.addText("X", font)
+        x_label.setPos(0.3, x_start_y - 0.2)  # 붐 원점 기준으로 오른쪽 아래
+        x_label.setDefaultTextColor(QColor("#333"))
+        x_label.setZValue(1)
+        # 상하 뒤집기 변환
+        x_transform = QTransform()
+        x_transform.scale(1, -1)
+        x_label.setTransform(x_transform)
+        
+        # Y축 라벨 (붐 원점 위쪽) - 상하 뒤집기
+        y_label = self.scene.addText("Y", font)
+        y_label.setPos(-0.3, x_start_y + 0.3)  # 붐 원점 기준으로 왼쪽 위
+        y_label.setDefaultTextColor(QColor("#333"))
+        y_label.setZValue(1)
+        # 상하 뒤집기 변환
+        y_transform = QTransform()
+        y_transform.scale(1, -1)
+        y_label.setTransform(y_transform)
         
         # 눈금 표시 (X축) - 숫자 제거
         for i in range(1, int(x_length) + 1):
